@@ -1,13 +1,15 @@
 # 化学反应配平 API
 
-用 **Python + FastAPI + SymPy** 实现的化学反应式自动配平服务。
+用 **Python + FastAPI + SymPy** 实现的化学反应式自动配平服务，支持普通反应、
+**离子反应**与**含电子的半反应**。
 
-按元素守恒构建**精确整数矩阵**（SymPy 有理数运算，无浮点误差），仅当：
+按元素守恒与电荷守恒构建**精确整数矩阵**（SymPy 有理数运算，无浮点误差），仅当：
 
 1. 矩阵零空间维数**恰为 1**，且
 2. 该唯一解可以整体取号为**全部严格正整数**
 
-时才返回配平结果；系数约成最大公约数为 1 的最小正整数，并返回反应两侧各元素的原子总数。
+时才返回配平结果；系数约成最大公约数为 1 的最小正整数，并返回反应两侧各元素的
+原子总数与带符号总电荷。不会为了配平而自动增删任何物种。
 
 ## 支持与不支持
 
@@ -17,11 +19,15 @@
 - 正整数下标（如 `H2O`、`Fe2(SO4)3`），不允许前导 0
 - **最多四层**圆括号嵌套，如 `K4(Fe(CN)6)`、`Mg2(Al(Si(BO4)2)3)2`
 - 重复元素累计计数（括号内外同名元素相加）
+- **电荷后缀**：化学式末尾的 `^+`、`^-`、`^n+`、`^n-`
+  （n 为无前导零的正整数，省略时按 1 计），如 `Na^+`、`SO4^2-`、`Fe^3+`；
+  无后缀表示中性
+- **电子**：仅写作 `e^-`（原子计数为空、电荷为 -1），可配平半反应
 
 **不支持**（直接判为非法化学式并给出字符位置）
 
-- 电荷记号（`Na+`、`OH-` 中的 `+`/`-`）
-- 电子（`e-`）
+- 裸 `+`/`-` 电荷记号（`Na+`、`OH-`）——请改写为 `Na^+`、`OH^-`
+- 电子的其他写法（`e-`、`e^+`、`e^2-`）——电子仅 `e^-`
 - 点号 / 中点结晶水（`CuSO4.5H2O`、`CuSO4·5H2O`）——请把 `CuSO4` 与 `5H2O` 拆成独立物质
 - 方括号、花括号（请改写为圆括号）
 
@@ -30,11 +36,11 @@
 需要本机已安装 Docker 与 Docker Compose v2：
 
 ```bash
-docker compose up --build -d
+docker compose up --build
 ```
 
 该命令在构建镜像时自动完成依赖安装（`pip install -r requirements.txt`），
-无需任何手动安装步骤。停止服务：
+无需任何手动安装步骤；加 `-d` 可后台运行。停止服务：
 
 ```bash
 docker compose down
@@ -44,16 +50,16 @@ docker compose down
 
 | 配置项 | 位置 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `BALANCER_PORT` | `docker-compose.yml` 环境变量 / `.env` | `8000` | 宿主机映射端口，如端口冲突可 `BALANCER_PORT=9000 docker compose up --build -d` |
+| `BALANCER_PORT` | `docker-compose.yml` 环境变量 / `.env` | `8000` | 宿主机映射端口，如端口冲突可 `BALANCER_PORT=9000 docker compose up --build` |
 | 容器内监听端口 | `Dockerfile` CMD | `8000` | 与 `EXPOSE` 保持一致，一般无需修改 |
 
 ### API 地址与端口
 
-- 服务地址：`http://127.0.0.1:8000`
-- 配平接口：`POST http://127.0.0.1:8000/balance`
-- 健康检查：`GET http://127.0.0.1:8000/health`
-- Swagger 交互文档：`http://127.0.0.1:8000/docs`
-- OpenAPI Schema：`http://127.0.0.1:8000/openapi.json`
+- 服务地址：`http://localhost:8000`
+- 配平接口：`POST http://localhost:8000/balance`
+- 健康检查：`GET http://localhost:8000/health`
+- Swagger 交互文档：`http://localhost:8000/docs`
+- OpenAPI Schema：`http://localhost:8000/openapi.json`
 
 ## 本地开发（不用 Docker）
 
@@ -97,15 +103,33 @@ pip install pytest && python -m pytest -q
   "atom_totals": {
     "reactants": {"Fe": 3, "O": 4},
     "products": {"Fe": 3, "O": 4}
-  }
+  },
+  "charge_totals": {"reactants": 0, "products": 0}
 }
 ```
 
-`atom_totals` 给出配平后两侧**各元素的原子总数**（两侧必然相等）。
+`atom_totals` 给出配平后两侧**各元素的原子总数**（两侧必然相等）；
+`charge_totals` 给出两侧**带符号的总电荷**（两侧必然相等，中性反应为 0）。
+
+离子 / 半反应示例（`MnO4^- + H^+ + e^- -> Mn^2+ + H2O`）：
+
+```json
+{
+  "balanced": true,
+  "coefficients": {"reactants": [1, 8, 5], "products": [1, 4]},
+  "equation": "MnO4^- + 8H^+ + 5e^- -> Mn^2+ + 4H2O",
+  "atom_totals": {
+    "reactants": {"H": 8, "Mn": 1, "O": 4},
+    "products": {"H": 8, "Mn": 1, "O": 4}
+  },
+  "charge_totals": {"reactants": 2, "products": 2}
+}
+```
 
 #### 无法配平（HTTP 200，`balanced: false`）
 
-零空间为空，或唯一解含零/正负混合系数，无法得到全部严格正系数：
+零空间为空（原子或电荷无法同时守恒），或唯一解含零/正负混合系数，
+无法得到全部严格正系数：
 
 ```json
 {
@@ -132,8 +156,9 @@ pip install pytest && python -m pytest -q
 
 #### 非法化学式（HTTP 400，`balanced: false`）
 
-一次性返回两侧**全部**非法化学式，`position` 为化学式中首个非法字符的
-**0 起始下标**（未闭合的 `(` 指向该括号本身）：
+一次性返回两侧**全部**非法化学式（含非法电荷写法），`position` 为化学式中
+首个非法字符的 **0 起始下标**（未闭合的 `(` 指向该括号本身；电荷后缀不完整时
+指向应有后续字符的位置）：
 
 ```json
 {
@@ -144,9 +169,9 @@ pip install pytest && python -m pytest -q
     {
       "side": "reactants",
       "index": 0,
-      "formula": "CuSO4.5H2O",
-      "position": 5,
-      "message": "不支持点号结晶水，请将其拆成反应物/生成物中的独立物质"
+      "formula": "SO4^02-",
+      "position": 4,
+      "message": "电荷数必须为正整数且不能以 0 开头"
     }
   ]
 }
@@ -157,19 +182,31 @@ pip install pytest && python -m pytest -q
 ### curl
 
 ```bash
-curl -s -X POST http://127.0.0.1:8000/balance \
+# 普通反应
+curl -s -X POST http://localhost:8000/balance \
   -H 'Content-Type: application/json' \
   -d '{"reactants": ["K4(Fe(CN)6)", "KMnO4", "H2SO4"],
        "products": ["KHSO4", "Fe2(SO4)3", "MnSO4", "HNO3", "CO2", "H2O"]}'
+
+# 酸性条件下的半反应（含电子）
+curl -s -X POST http://localhost:8000/balance \
+  -H 'Content-Type: application/json' \
+  -d '{"reactants": ["MnO4^-", "H^+", "e^-"], "products": ["Mn^2+", "H2O"]}'
+
+# 离子方程式
+curl -s -X POST http://localhost:8000/balance \
+  -H 'Content-Type: application/json' \
+  -d '{"reactants": ["Zn", "Cu^2+"], "products": ["Zn^2+", "Cu"]}'
 ```
 
 ### Python（仅标准库）
 
-`examples/example_call.py` 演示成功、无法配平、多组解、非法化学式四类场景：
+`examples/example_call.py` 演示普通配平、离子/半反应、无法配平、多组解、
+非法化学式等场景：
 
 ```bash
 python examples/example_call.py
-# 服务地址不同时：BASE_URL=http://127.0.0.1:9000 python examples/example_call.py
+# 服务地址不同时：BASE_URL=http://localhost:9000 python examples/example_call.py
 ```
 
 ### Python（requests）
@@ -178,7 +215,7 @@ python examples/example_call.py
 import requests
 
 resp = requests.post(
-    "http://127.0.0.1:8000/balance",
+    "http://localhost:8000/balance",
     json={"reactants": ["H2O"], "products": ["H2", "O2"]},
 )
 print(resp.json())
@@ -187,15 +224,19 @@ print(resp.json())
 
 ## 算法与判定规则
 
-1. 用递归下降解析器校验并解析每个化学式，得到 `{元素: 原子数}`；
-2. 以物质为列、元素为行构建矩阵 `A`：反应物列取正、生成物列取负；
+1. 用递归下降解析器校验并解析每个物种，得到 `{元素: 原子数}` 与带符号电荷
+   （电子 `e^-` 的原子计数为空、电荷为 -1）；
+2. 以物质为列构建矩阵 `A`：每种元素一行，反应物列取正、生成物列取负；
+   额外加入一行**带符号电荷行**（同一符号约定），中性反应时该行为全零，
+   不改变原有行为；
 3. `sympy.Matrix(...).nullspace()` 在精确有理数域上求零空间：
    - 零空间维数 0 → `unbalanceable`；
    - 维数 > 1 → `multiple_solutions`；
 4. 唯一基向量含零分量或正负混合 → `unbalanceable`（不存在全部严格正系数）；
 5. 整体取号为正，按分母公倍数转整数，再除以全部系数的最大公约数，
    得到 gcd = 1 的最小正整数解；
-6. 校验 `A·c = 0` 后返回系数与两侧原子总数。
+6. 校验 `A·c = 0`（原子守恒且电荷守恒）后返回系数、两侧原子总数与
+   两侧带符号总电荷。
 
 ## 项目结构
 
@@ -204,11 +245,11 @@ print(resp.json())
 ├── app/
 │   ├── main.py       # FastAPI 入口（/balance、/health）
 │   ├── schemas.py    # Pydantic 请求/响应模型
-│   ├── balancer.py   # 元素守恒矩阵与零空间配平
-│   └── parser.py     # 化学式递归下降解析（四层括号/位置报错）
+│   ├── balancer.py   # 元素+电荷守恒矩阵与零空间配平
+│   └── parser.py     # 化学式/电荷/电子递归下降解析（四层括号/位置报错）
 ├── examples/
 │   └── example_call.py
-├── tests/            # pytest 测试（28 个用例）
+├── tests/            # pytest 测试（43 个用例）
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt

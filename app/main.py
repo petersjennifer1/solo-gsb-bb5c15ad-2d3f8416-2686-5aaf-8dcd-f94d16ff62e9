@@ -12,16 +12,17 @@ from .balancer import (
     UnbalanceableError,
     balance_reaction,
 )
-from .parser import FormulaSyntaxError, parse_formula
+from .parser import FormulaSyntaxError, parse_species
 from .schemas import BalanceRequest
 
 app = FastAPI(
     title="化学反应配平 API",
     description=(
-        "输入反应物与生成物的化学式数组，基于元素守恒精确整数矩阵配平。"
-        "支持元素符号、正整数下标与最多四层圆括号；不支持电荷、点号结晶水、电子。"
+        "输入反应物与生成物的化学式数组，基于元素守恒与电荷守恒的精确整数矩阵配平。"
+        "支持元素符号、正整数下标、最多四层圆括号、末尾 ^+/^-/^n+/^n- 电荷后缀"
+        "与电子 e^-（可配平离子反应与半反应）；不支持点号结晶水。"
     ),
-    version="1.0.0",
+    version="1.1.0",
 )
 
 
@@ -51,7 +52,7 @@ def balance(request: BalanceRequest) -> JSONResponse:
     ):
         for index, formula in enumerate(formulas):
             try:
-                parse_formula(formula)
+                parse_species(formula)
             except FormulaSyntaxError as exc:
                 formula_errors.append(
                     {

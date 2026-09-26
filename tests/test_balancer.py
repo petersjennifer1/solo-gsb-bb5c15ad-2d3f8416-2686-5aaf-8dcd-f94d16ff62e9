@@ -95,3 +95,49 @@ def test_repeated_formula_entries():
     # 同一物质出现两次：H2 + H2 -> H2O ... 无法配平（O 无来源）
     with pytest.raises(UnbalanceableError):
         balance_reaction(["H2", "H2"], ["H2O"])
+
+
+def test_neutral_reaction_has_zero_charge_totals():
+    result = balance_reaction(["Fe", "O2"], ["Fe3O4"])
+    assert result["charge_totals"] == {"reactants": 0, "products": 0}
+
+
+def test_half_reaction_with_electron():
+    # 氧化半反应：Fe^2+ -> Fe^3+ + e^-
+    result = balance_reaction(["Fe^2+"], ["Fe^3+", "e^-"])
+    assert result["coefficients"] == {"reactants": [1], "products": [1, 1]}
+    assert result["charge_totals"] == {"reactants": 2, "products": 2}
+    assert result["atom_totals"]["reactants"] == {"Fe": 1}
+    assert result["atom_totals"]["products"] == {"Fe": 1}
+
+
+def test_acidic_permanganate_half_reaction():
+    # 酸性条件下的还原半反应：MnO4^- + H^+ + e^- -> Mn^2+ + H2O
+    result = balance_reaction(
+        ["MnO4^-", "H^+", "e^-"],
+        ["Mn^2+", "H2O"],
+    )
+    assert result["coefficients"] == {"reactants": [1, 8, 5], "products": [1, 4]}
+    assert result["charge_totals"] == {"reactants": 2, "products": 2}
+    totals = result["atom_totals"]
+    assert totals["reactants"] == totals["products"] == {"H": 8, "Mn": 1, "O": 4}
+    assert result["equation"] == "MnO4^- + 8H^+ + 5e^- -> Mn^2+ + 4H2O"
+
+
+def test_ionic_reaction_without_electron():
+    # 离子方程式：Zn + Cu^2+ -> Zn^2+ + Cu
+    result = balance_reaction(["Zn", "Cu^2+"], ["Zn^2+", "Cu"])
+    assert result["coefficients"] == {"reactants": [1, 1], "products": [1, 1]}
+    assert result["charge_totals"] == {"reactants": 2, "products": 2}
+
+
+def test_charge_not_conserved_is_unbalanceable():
+    # 原子守恒但电荷不守恒：Fe^2+ -> Fe^3+ 缺少电子
+    with pytest.raises(UnbalanceableError):
+        balance_reaction(["Fe^2+"], ["Fe^3+"])
+
+
+def test_electron_only_on_one_side_is_unbalanceable():
+    # 电子被迫系数为 0：H2O -> H2 + O2 + e^-
+    with pytest.raises(UnbalanceableError):
+        balance_reaction(["H2O"], ["H2", "O2", "e^-"])

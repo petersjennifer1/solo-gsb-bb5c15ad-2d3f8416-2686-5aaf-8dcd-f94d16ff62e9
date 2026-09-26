@@ -1,13 +1,16 @@
-"""基于元素守恒矩阵的反应配平。
+"""基于元素守恒与电荷守恒矩阵的反应配平。
 
-把每种物质作为一列、每种元素作为一行：
+把每种物质作为一列、每种元素作为一行，并额外加入一行带符号电荷：
 
 * 反应物列填入该物质中各元素的原子数（正号）；
-* 生成物列填入原子数的相反数（负号）。
+* 生成物列填入原子数的相反数（负号）；
+* 电荷行填入各物种的带符号电荷（反应物为正、生成物为负），
+  中性物种为 0，电子 ``e^-`` 为 -1。
 
-配平系数向量 ``c`` 满足 ``A · c = 0``。用 SymPy 在整数/有理数域上求精确
-零空间：零空间维数必须恰为 1，且该基向量可以整体取号为全部严格正整数，
-再约去最大公约数得到最小正整数解。
+配平系数向量 ``c`` 满足 ``A · c = 0``（原子守恒且电荷守恒）。
+用 SymPy 在整数/有理数域上求精确零空间：零空间维数必须恰为 1，
+且该基向量可以整体取号为全部严格正整数，再约去最大公约数得到
+最小正整数解。不会为了配平而自动增删任何物种。
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from math import gcd
 
 from sympy import Matrix, Rational
 
-from .parser import FormulaSyntaxError, parse_formula
+from .parser import FormulaSyntaxError, parse_species
 
 
 class BalanceError(Exception):
@@ -24,7 +27,7 @@ class BalanceError(Exception):
 
 
 class UnbalanceableError(BalanceError):
-    """零空间无解（无法满足元素守恒）。"""
+    """零空间无解（无法满足元素守恒与电荷守恒）。"""
 
     kind = "unbalanceable"
 
@@ -38,7 +41,7 @@ class MultipleSolutionsError(BalanceError):
 def balance_reaction(
     reactants: list[str], products: list[str]
 ) -> dict:
-    """配平一个化学反应。
+    """配平一个化学反应（支持离子与含电子 ``e^-`` 的半反应）。
 
     :returns: 成功时返回字典，字段见模块级说明；
     :raises UnbalanceableError: 无法配平；
@@ -48,18 +51,28 @@ def balance_reaction(
     species = [*reactants, *products]
     n_reactants = len(reactants)
 
-    parsed = [parse_formula(formula) for formula in species]
-    elements = sorted({el for counts in parsed for el in counts})
+    parsed = [parse_species(formula) for formula in species]
+    atom_counts = [counts for counts, _ in parsed]
+    charges = [charge for _, charge in parsed]
+    elements = sorted({el for counts in atom_counts for el in counts})
 
-    matrix = Matrix(
+    def side_sign(index: int) -> int:
+        return 1 if index < n_reactants else -1
+
+    rows = [
         [
-            [
-                Rational(counts.get(el, 0)) * (1 if i < n_reactants else -1)
-                for i, counts in enumerate(parsed)
-            ]
-            for el in elements
+            Rational(counts.get(el, 0)) * side_sign(i)
+            for i, counts in enumerate(atom_counts)
         ]
+        for el in elements
+    ]
+    # 带符号电荷行：与元素行同一符号约定，保证两侧电荷守恒；
+    # 全中性反应时该行为全零，不改变零空间，保持原有行为。
+    rows.append(
+        [Rational(charge) * side_sign(i) for i, charge in enumerate(charges)]
     )
+
+    matrix = Matrix(rows)
 
     nullspace = matrix.nullspace()
     if not nullspace:
@@ -83,12 +96,19 @@ def balance_reaction(
 
     reactant_coeffs = coefficients[:n_reactants]
     product_coeffs = coefficients[n_reactants:]
-    left_atoms = _atom_totals(parsed[:n_reactants], reactant_coeffs)
-    right_atoms = _atom_totals(parsed[n_reactants:], product_coeffs)
+    left_atoms = _atom_totals(atom_counts[:n_reactants], reactant_coeffs)
+    right_atoms = _atom_totals(atom_counts[n_reactants:], product_coeffs)
 
     # 最终核验：两侧各元素原子数必须完全一致。
     if left_atoms != right_atoms:  # 理论上不会发生，留作防御
         raise UnbalanceableError("内部校验失败：两侧原子数不一致")
+
+    left_charge = _charge_total(charges[:n_reactants], reactant_coeffs)
+    right_charge = _charge_total(charges[n_reactants:], product_coeffs)
+
+    # 最终核验：两侧带符号总电荷必须一致。
+    if left_charge != right_charge:  # 理论上不会发生，留作防御
+        raise UnbalanceableError("内部校验失败：两侧电荷不守恒")
 
     return {
         "balanced": True,
@@ -110,6 +130,10 @@ def balance_reaction(
         "atom_totals": {
             "reactants": left_atoms,
             "products": right_atoms,
+        },
+        "charge_totals": {
+            "reactants": left_charge,
+            "products": right_charge,
         },
     }
 
@@ -145,6 +169,11 @@ def _atom_totals(
         for element, amount in counts.items():
             totals[element] = totals.get(element, 0) + amount * coeff
     return dict(sorted(totals.items()))
+
+
+def _charge_total(charges: list[int], coeffs: list[int]) -> int:
+    """一侧的带符号总电荷：Σ 系数 × 物种电荷。"""
+    return sum(charge * coeff for charge, coeff in zip(charges, coeffs))
 
 
 def _render_equation(

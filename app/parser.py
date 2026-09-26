@@ -1,11 +1,14 @@
-"""化学式解析器。
+"""化学式 / 物种解析器。
 
 支持的语法（递归下降文法）::
 
+    species    := formula [charge] | electron
     formula    := term+
     term       := '(' formula ')' [digits] | element [digits]
     element    := 大写字母 [小写字母]
     digits     := 非零开头的十进制正整数
+    charge     := '^' [digits] ('+' | '-')
+    electron   := 'e^-'
 
 规则：
 
@@ -13,7 +16,10 @@
 * 下标必须为正整数，不允许前导 0；
 * 圆括号最多嵌套四层；
 * 重复出现的元素计数累加，括号乘以整体后同样累加；
-* 不支持电荷（+/- 上标）、点号结晶水（``CuSO4·5H2O``）与电子（``e-``），
+* 电荷以后缀形式写在化学式末尾：``^+``、``^-``、``^n+``、``^n-``
+  （n 为无前导零的正整数，省略时按 1 计）；无后缀表示中性；
+* 电子仅写作 ``e^-``，其原子计数为空、电荷为 -1；
+* 不支持点号结晶水（``CuSO4·5H2O``）与裸 ``+``/``-`` 电荷记号，
   方括号/花括号同样视为非法字符，必须改写为圆括号或拆成独立物质。
 """
 
@@ -26,7 +32,8 @@ class FormulaSyntaxError(ValueError):
     """非法化学式。
 
     ``position`` 为 0 起始的字符下标，指向首个非法字符
-    （未闭合的 '(' 指向其本身，未配对的 ')' 指向 ')'，空串为 0）。
+    （未闭合的 '(' 指向其本身，未配对的 ')' 指向 ')'，空串为 0；
+    电荷后缀不完整时指向应有后续字符的位置，可等于字符串长度）。
     """
 
     def __init__(self, message: str, position: int):
@@ -52,26 +59,59 @@ _LOWERCASE = frozenset("abcdefghijklmnopqrstuvwxyz")
 _DIGITS = frozenset("0123456789")
 
 
-def parse_formula(text: str) -> dict[str, int]:
-    """解析化学式，返回 ``{元素符号: 原子数}``。
+def parse_species(text: str) -> tuple[dict[str, int], int]:
+    """解析一个物种（化学式 + 可选电荷后缀，或电子 ``e^-``）。
 
-    对于重复出现的元素（含括号展开）进行计数累加。
+    返回 ``({元素符号: 原子数}, 带符号电荷)``；电子的原子计数为空、
+    电荷为 -1；无电荷后缀时电荷为 0。
 
-    :raises FormulaSyntaxError: 化学式非法，异常中带字符位置。
+    :raises FormulaSyntaxError: 化学式或电荷后缀非法，异常中带字符位置。
     """
     if not isinstance(text, str) or not text:
         raise FormulaSyntaxError("化学式不能为空", 0)
 
+    # 电子：只允许整体写作 e^-（原子计数为空、电荷 -1）
+    if text[0] == "e":
+        if text == "e^-":
+            return {}, -1
+        if text.startswith("e^"):
+            position = 2 if len(text) > 2 else len(text)
+            if text.startswith("e^-") and len(text) > 3:
+                position = 3  # e^- 之后的多余字符
+            raise FormulaSyntaxError("电子仅写作 e^-", position)
+        raise FormulaSyntaxError("元素符号必须以大写字母开头", 0)
+
     counts, pos = _parse_group(text, 0, depth=1, open_paren_pos=0)
+    if pos < len(text) and text[pos] == "^":
+        charge, pos = _parse_charge(text, pos)
+        if pos != len(text):
+            raise FormulaSyntaxError("电荷后缀后存在多余字符", pos)
+        return dict(sorted(counts.items())), charge
     if pos != len(text):  # 理论上不会发生，留作防御
         raise FormulaSyntaxError("无法解析的残余字符", pos)
-    return dict(sorted(counts.items()))
+    return dict(sorted(counts.items())), 0
+
+
+def parse_formula(text: str) -> dict[str, int]:
+    """解析化学式，返回 ``{元素符号: 原子数}``。
+
+    对于重复出现的元素（含括号展开）进行计数累加。
+    末尾的电荷后缀（如 ``^2-``）会被接受但不计入返回值，
+    需要电荷时请使用 :func:`parse_species`。
+
+    :raises FormulaSyntaxError: 化学式非法，异常中带字符位置。
+    """
+    counts, _charge = parse_species(text)
+    return counts
 
 
 def _parse_group(
     text: str, pos: int, depth: int, open_paren_pos: int
 ) -> tuple[dict[str, int], int]:
-    """解析一个括号组（或整个公式），返回 (计数表, 结束位置)。"""
+    """解析一个括号组（或整个公式），返回 (计数表, 结束位置)。
+
+    顶层的 ``^`` 会结束解析并把位置留给电荷后缀；括号内的 ``^`` 非法。
+    """
     group: dict[str, int] = {}
     saw_term = False
 
@@ -97,6 +137,15 @@ def _parse_group(
             if not saw_term:
                 raise FormulaSyntaxError("括号内为空", pos)
             return group, pos + 1
+
+        elif ch == "^":
+            if depth > 1:
+                raise FormulaSyntaxError(
+                    "电荷后缀 '^' 只能出现在整个化学式的末尾", pos
+                )
+            if not saw_term:
+                raise FormulaSyntaxError("电荷后缀 '^' 前缺少化学式", pos)
+            break  # 顶层电荷后缀，交给 parse_species 处理
 
         elif ch in _UPPERCASE:
             symbol = ch
@@ -139,6 +188,29 @@ def _parse_number(text: str, pos: int) -> tuple[int, int]:
     return int(text[start:pos]), pos
 
 
+def _parse_charge(text: str, pos: int) -> tuple[int, int]:
+    """解析 ``^`` 起始的电荷后缀，返回 (带符号电荷, 结束位置)。
+
+    语法为 ``^`` 后接可选的电荷数（无前导零正整数，缺省为 1）与
+    ``+``/``-`` 号；后缀之后是否还有字符由调用方检查。
+    """
+    pos += 1  # 跳过 '^'
+
+    magnitude = 1
+    if pos < len(text) and text[pos] in _DIGITS:
+        if text[pos] == "0":
+            raise FormulaSyntaxError("电荷数必须为正整数且不能以 0 开头", pos)
+        start = pos
+        while pos < len(text) and text[pos] in _DIGITS:
+            pos += 1
+        magnitude = int(text[start:pos])
+
+    if pos >= len(text) or text[pos] not in ("+", "-"):
+        raise FormulaSyntaxError("电荷后缀 '^' 后缺少 '+' 或 '-'", pos)
+    sign = 1 if text[pos] == "+" else -1
+    return sign * magnitude, pos + 1
+
+
 def _add(target: dict[str, int], source: dict[str, int], multiplier: int) -> None:
     for symbol, amount in source.items():
         target[symbol] = target.get(symbol, 0) + amount * multiplier
@@ -150,7 +222,7 @@ def _illegal_char_hint(ch: str) -> str:
     if ch in ("·", "•", "⋅"):
         return "不支持中点结晶水记号，请将其拆成反应物/生成物中的独立物质"
     if ch in ("+", "-"):
-        return "不支持电荷或电子记号（+/-）"
+        return "裸 '+/-' 电荷记号不受支持，电荷请写作末尾的 ^+、^-、^n+、^n- 后缀"
     if ch in ("[", "]", "{", "}"):
         return f"不支持 '{ch}'，请改用圆括号 '(' ')'"
     if ch.isspace():
