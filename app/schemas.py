@@ -36,6 +36,11 @@ class AtomTotals(BaseModel):
     products: dict[str, int]
 
 
+class ChargeTotals(BaseModel):
+    reactants: int = Field(description="反应物一侧带符号的总电荷")
+    products: int = Field(description="生成物一侧带符号的总电荷")
+
+
 class BalanceSuccessResponse(BaseModel):
     balanced: Literal[True] = True
     reactants: list[SpeciesCoefficient]
@@ -43,6 +48,7 @@ class BalanceSuccessResponse(BaseModel):
     coefficients: CoefficientPair
     equation: str
     atom_totals: AtomTotals
+    charge_totals: ChargeTotals
 
 
 class FormulaErrorDetail(BaseModel):

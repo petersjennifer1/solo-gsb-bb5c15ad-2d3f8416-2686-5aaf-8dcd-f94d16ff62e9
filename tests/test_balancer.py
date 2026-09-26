@@ -13,6 +13,8 @@ def test_simple_balance():
     assert result["equation"] == "3Fe + 2O2 -> Fe3O4"
     assert result["atom_totals"]["reactants"] == {"Fe": 3, "O": 4}
     assert result["atom_totals"]["products"] == {"Fe": 3, "O": 4}
+    # 中性反应保持兼容：两侧总电荷均为 0
+    assert result["charge_totals"] == {"reactants": 0, "products": 0}
 
 
 def test_order_is_preserved():
@@ -95,3 +97,80 @@ def test_repeated_formula_entries():
     # 同一物质出现两次：H2 + H2 -> H2O ... 无法配平（O 无来源）
     with pytest.raises(UnbalanceableError):
         balance_reaction(["H2", "H2"], ["H2O"])
+
+
+def test_ionic_reaction_balances_with_charge_row():
+    # Ag^+ + Cu -> Ag + Cu^2+  =>  2Ag^+ + Cu -> 2Ag + Cu^2+
+    result = balance_reaction(["Ag^+", "Cu"], ["Ag", "Cu^2+"])
+    assert result["coefficients"] == {"reactants": [2, 1], "products": [2, 1]}
+    assert result["atom_totals"]["reactants"] == {"Ag": 2, "Cu": 1}
+    assert result["atom_totals"]["products"] == {"Ag": 2, "Cu": 1}
+    assert result["charge_totals"] == {"reactants": 2, "products": 2}
+    assert result["equation"] == "2Ag^+ + Cu -> 2Ag + Cu^2+"
+
+
+def test_ionic_precipitation_reaction():
+    # Ag^+ + Cl^- -> AgCl，净离子反应，两侧总电荷为 0
+    result = balance_reaction(["Ag^+", "Cl^-"], ["AgCl"])
+    assert result["coefficients"] == {"reactants": [1, 1], "products": [1]}
+    assert result["charge_totals"] == {"reactants": 0, "products": 0}
+
+
+def test_half_reaction_with_electrons_reduction():
+    # MnO4^- + H^+ + e^- -> Mn^2+ + H2O
+    # => MnO4^- + 8H^+ + 5e^- -> Mn^2+ + 4H2O
+    result = balance_reaction(
+        ["MnO4^-", "H^+", "e^-"],
+        ["Mn^2+", "H2O"],
+    )
+    assert result["coefficients"] == {
+        "reactants": [1, 8, 5],
+        "products": [1, 4],
+    }
+    assert result["atom_totals"]["reactants"] == {"Mn": 1, "O": 4, "H": 8}
+    assert result["atom_totals"]["products"] == {"Mn": 1, "O": 4, "H": 8}
+    # 左侧：-1 + 8 - 5 = +2，右侧：+2
+    assert result["charge_totals"] == {"reactants": 2, "products": 2}
+
+
+def test_half_reaction_with_electrons_oxidation():
+    # Fe^2+ -> Fe^3+ + e^-
+    result = balance_reaction(["Fe^2+"], ["Fe^3+", "e^-"])
+    assert result["coefficients"] == {"reactants": [1], "products": [1, 1]}
+    assert result["atom_totals"]["reactants"] == {"Fe": 1}
+    assert result["charge_totals"] == {"reactants": 2, "products": 2}
+
+
+def test_electron_appears_in_equation_string():
+    result = balance_reaction(["Fe^2+"], ["Fe^3+", "e^-"])
+    assert result["equation"] == "Fe^2+ -> Fe^3+ + e^-"
+
+
+def test_charge_mismatch_is_unbalanceable():
+    # 原子守恒但电荷不守恒：Na^+ -> Na （电子缺失），无解
+    with pytest.raises(UnbalanceableError):
+        balance_reaction(["Na^+"], ["Na"])
+
+    # 两侧电荷不可调和：Na^+ -> Cl^-
+    with pytest.raises(UnbalanceableError):
+        balance_reaction(["Na^+"], ["Cl^-"])
+
+
+def test_electron_only_rows_still_need_atom_balance():
+    # e^- -> e^- 同物种列两侧：1 e^- -> 1 e^-
+    result = balance_reaction(["e^-"], ["e^-"])
+    assert result["coefficients"] == {"reactants": [1], "products": [1]}
+    assert result["atom_totals"] == {"reactants": {}, "products": {}}
+    assert result["charge_totals"] == {"reactants": -1, "products": -1}
+
+
+def test_input_order_preserved_with_ions():
+    result = balance_reaction(["e^-", "H^+", "MnO4^-"], ["H2O", "Mn^2+"])
+    assert [item["formula"] for item in result["reactants"]] == [
+        "e^-",
+        "H^+",
+        "MnO4^-",
+    ]
+    assert [item["formula"] for item in result["products"]] == ["H2O", "Mn^2+"]
+    assert result["coefficients"]["reactants"] == [5, 8, 1]
+    assert result["coefficients"]["products"] == [4, 1]
